@@ -1,10 +1,13 @@
 """Video -> transcript -> questions.
 
-Runs on the admin's machine. Download and transcription are slow, so they run
-in a background thread and report progress through a job dict.
+Download and transcription (yt-dlp + Whisper) only run where those packages are installed,
+i.e. on the admin's PC. Online, the admin pastes the transcript instead.
+Questions come from Gemini (free tier) when GEMINI_API_KEY is set, else from Claude.
+Slow work runs in a background thread and reports progress through a job dict.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -16,7 +19,18 @@ import uuid
 from pathlib import Path
 
 MODEL = os.environ.get("QUIZ_CLAUDE_MODEL", "claude-sonnet-5-5")
+GEMINI_MODEL = os.environ.get("QUIZ_GEMINI_MODEL", "gemini-2.5-flash")
 WHISPER_SIZE = os.environ.get("QUIZ_WHISPER", "small")
+
+
+def transcription_available() -> bool:
+    """True only where the local transcription stack is installed and not switched off."""
+    if os.environ.get("QUIZ_TRANSCRIBE", "auto") == "0":
+        return False
+    return all(importlib.util.find_spec(m) for m in ("yt_dlp", "faster_whisper", "numpy"))
+
+
+NEEDS_TRANSCRIPT = "Collez la transcription de la vidéo : la version en ligne ne peut pas télécharger les vidéos"
 
 JOBS: dict[str, dict] = {}
 
@@ -71,18 +85,49 @@ Transcription :
 {transcript}"""
 
 
-def generate_questions(transcript: str, n: int = 10) -> dict:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise RuntimeError("Clé ANTHROPIC_API_KEY absente : ajoutez-la dans le fichier .env")
-    import anthropic
+def _ask_gemini(prompt: str) -> str:
+    import httpx
 
-    client = anthropic.Anthropic()
-    msg = client.messages.create(
-        model=MODEL,
-        max_tokens=4000,
-        messages=[{"role": "user", "content": PROMPT.format(n=n, transcript=transcript[:60000])}],
+    res = httpx.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4},
+        },
+        timeout=120,
     )
-    text = "".join(b.text for b in msg.content if b.type == "text").strip()
+    if res.status_code == 429:
+        raise RuntimeError("Limite gratuite de Gemini atteinte, réessayez dans quelques minutes")
+    if res.status_code >= 400:
+        raise RuntimeError(f"Gemini a refusé la demande (code {res.status_code}), vérifiez la clé GEMINI_API_KEY")
+    data = res.json()
+    try:
+        return "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
+    except (KeyError, IndexError):
+        raise RuntimeError("Gemini n'a pas renvoyé de questions, réessayez")
+
+
+def _ask_claude(prompt: str) -> str:
+    try:
+        import anthropic
+    except ImportError:
+        raise RuntimeError("Le paquet anthropic n'est pas installé")
+    msg = anthropic.Anthropic().messages.create(
+        model=MODEL, max_tokens=4000, messages=[{"role": "user", "content": prompt}]
+    )
+    return "".join(b.text for b in msg.content if b.type == "text")
+
+
+def generate_questions(transcript: str, n: int = 10) -> dict:
+    prompt = PROMPT.format(n=n, transcript=transcript[:60000])
+    if os.environ.get("GEMINI_API_KEY"):
+        text = _ask_gemini(prompt)
+    elif os.environ.get("ANTHROPIC_API_KEY"):
+        text = _ask_claude(prompt)
+    else:
+        raise RuntimeError("Aucune clé d'IA : ajoutez GEMINI_API_KEY (gratuite) dans les réglages")
+    text = text.strip()
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end < 0:
         raise RuntimeError("La réponse de l'IA n'est pas exploitable, réessayez")
@@ -98,6 +143,8 @@ def start_job(url: str, transcript: str, n: int, on_done) -> str:
         try:
             text = transcript
             if not text.strip():
+                if not transcription_available():
+                    raise RuntimeError(NEEDS_TRANSCRIPT)
                 _set(job_id, step="Téléchargement et transcription de la vidéo")
                 text = transcribe_url(url)
             _set(job_id, step="Écriture des questions")

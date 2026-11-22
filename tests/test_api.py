@@ -7,6 +7,7 @@ import pytest
 _tmp = tempfile.mkdtemp()
 os.environ["QUIZ_DB"] = os.path.join(_tmp, "test.db")
 os.environ["ADMIN_PASSWORD"] = "secret-pass"
+os.environ["DATABASE_URL"] = ""  # tests always run on a throwaway SQLite file
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -122,3 +123,63 @@ def test_delete_submission_and_quiz(client):
     assert client.get(f"/api/admin/quizzes/{qid}/submissions", headers=AUTH).json() == []
     assert client.delete(f"/api/admin/quizzes/{qid}", headers=AUTH).status_code == 200
     assert client.get(f"/api/q/{slug}").status_code == 404
+
+
+# ---------------------------------------------------------------- online mode (Render) and Gemini
+from app import pipeline  # noqa: E402
+
+
+def test_online_requires_transcript(client, monkeypatch):
+    monkeypatch.setenv("QUIZ_TRANSCRIBE", "0")
+    assert client.get("/api/admin/config", headers=AUTH).json() == {"transcribe": False}
+    before = len(client.get("/api/admin/quizzes", headers=AUTH).json())
+    r = client.post("/api/admin/quizzes", headers=AUTH, json={"video_url": "https://youtu.be/_Ybx69RTTOQ"})
+    assert r.status_code == 400 and "transcription" in r.json()["detail"]
+    # the refused request must not leave an empty draft behind
+    assert len(client.get("/api/admin/quizzes", headers=AUTH).json()) == before
+
+
+def test_healthz_needs_no_password(client):
+    assert client.get("/healthz").json() == {"ok": True}
+
+
+class _FakeResponse:
+    def __init__(self, status, payload):
+        self.status_code, self._payload = status, payload
+
+    def json(self):
+        return self._payload
+
+
+def test_gemini_generation(monkeypatch):
+    import httpx
+
+    sent = {}
+    quiz = '{"title": "PPL", "questions": [{"question": "Q ?", "options": ["a", "b"], "correct": 1, "explanation": ""}]}'
+
+    def fake_post(url, headers, json, timeout):
+        sent.update(url=url, key=headers["x-goog-api-key"], prompt=json["contents"][0]["parts"][0]["text"])
+        return _FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": quiz}]}}]})
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(httpx, "post", fake_post)
+    data = pipeline.generate_questions("Le texte de la vidéo", n=3)
+    assert data["title"] == "PPL" and data["questions"][0]["correct"] == 1
+    assert sent["key"] == "test-key" and "Le texte de la vidéo" in sent["prompt"]
+    assert sent["url"].startswith("https://generativelanguage.googleapis.com/")
+
+
+def test_gemini_quota_message(monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _FakeResponse(429, {}))
+    with pytest.raises(RuntimeError, match="Limite gratuite"):
+        pipeline.generate_questions("texte", n=3)
+
+
+def test_no_ai_key_message(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
+        pipeline.generate_questions("texte", n=3)

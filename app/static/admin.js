@@ -20,11 +20,17 @@ async function loadList() {
 }
 
 /* ------------------------------------------------------------ new */
-function renderNew() {
+async function renderNew() {
   S.current = null;
   loadList();
+  if (!S.config) {
+    try { S.config = await api("/api/admin/config"); } catch (_) { S.config = { transcribe: false }; }
+  }
+  const local = S.config.transcribe;
   const url = h("input", { type: "url", placeholder: "https://www.youtube.com/watch?v=…", autocomplete: "off" });
-  const transcript = h("textarea", { rows: "6", placeholder: "Collez ici le texte de la vidéo si le téléchargement échoue" });
+  const transcript = h("textarea", { rows: local ? "6" : "10", placeholder: local
+    ? "Collez ici le texte de la vidéo si le téléchargement échoue"
+    : "Collez ici tout le texte prononcé dans la vidéo" });
   const count = h("select", {}, [5, 8, 10, 15].map((n) => h("option", { value: n, selected: n === 10 }, n + " questions")));
   const status = h("div");
   const go = h("button", { class: "primary", type: "button" }, "Générer les questions");
@@ -48,10 +54,12 @@ function renderNew() {
 
   mainEl.replaceChildren(
     h("h2", {}, "Nouveau questionnaire"),
-    h("p", { class: "muted", style: "margin-top:8px" }, "Collez le lien d'une vidéo. Le site la transcrit puis écrit les questions. Vous les relisez avant de publier."),
+    h("p", { class: "muted", style: "margin-top:8px" }, local
+      ? "Collez le lien d'une vidéo. Le site la transcrit puis écrit les questions. Vous les relisez avant de publier."
+      : "Collez le texte de la vidéo, l'IA écrit les questions, vous les relisez avant de publier. Sur YouTube, le texte se trouve sous la vidéo, dans « Afficher la transcription »."),
     h("div", { class: "card stack", style: "margin-top:24px" },
-      h("label", { class: "field" }, h("span", {}, "Lien de la vidéo"), url),
-      h("label", { class: "field" }, h("span", {}, "Transcription (facultatif)"), transcript),
+      h("label", { class: "field" }, h("span", {}, local ? "Lien de la vidéo" : "Lien de la vidéo (affichée aux participants)"), url),
+      h("label", { class: "field" }, h("span", {}, local ? "Transcription (facultatif)" : "Transcription"), transcript),
       h("label", { class: "field", style: "max-width:240px" }, h("span", {}, "Nombre de questions"), count),
       h("div", { class: "row wrap" }, go, manual), status));
 }

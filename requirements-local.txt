@@ -1,0 +1,7 @@
+# Sur votre PC : ajoute la transcription des vidéos, Claude en option et les tests
+-r requirements.txt
+anthropic>=0.40
+yt-dlp[default]
+faster-whisper
+numpy
+pytest

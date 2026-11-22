@@ -35,6 +35,10 @@ _load_env()
 from . import db, pipeline  # noqa: E402  (after .env so settings are visible)
 
 STATIC = Path(__file__).resolve().parent / "static"
+ONLINE = bool(os.environ.get("RENDER") or os.environ.get("QUIZ_ONLINE"))
+if ONLINE and not os.environ.get("ADMIN_PASSWORD"):
+    # Online, a random password printed to the host's logs would be both unusable and leaked.
+    raise RuntimeError("ADMIN_PASSWORD doit être défini dans les variables d'environnement de l'hébergeur")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or secrets.token_urlsafe(9)
 if not os.environ.get("ADMIN_PASSWORD"):
     print(f"[quiz] ADMIN_PASSWORD absent du .env, mot de passe temporaire : {ADMIN_PASSWORD}")
@@ -62,6 +66,12 @@ def admin(creds: HTTPBasicCredentials = Depends(basic)) -> None:
 @app.get("/", include_in_schema=False)
 def root():
     return RedirectResponse("/admin")
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    """Used by the host to check the app is up. No database call, so it stays fast when Neon is asleep."""
+    return {"ok": True}
 
 
 @app.get("/admin", include_in_schema=False)
@@ -122,19 +132,26 @@ def list_quizzes(_: None = Depends(admin)):
     ]
 
 
+@app.get("/api/admin/config")
+def admin_config(_: None = Depends(admin)):
+    return {"transcribe": pipeline.transcription_available()}
+
+
 @app.post("/api/admin/quizzes")
 def create_quiz(body: CreateQuiz, _: None = Depends(admin)):
+    if body.generate:
+        if not body.video_url.strip() and not body.transcript.strip():
+            raise HTTPException(400, "Collez un lien de vidéo ou une transcription")
+        if not body.transcript.strip() and not pipeline.transcription_available():
+            raise HTTPException(400, pipeline.NEEDS_TRANSCRIPT)
     slug = db.new_slug()
     with db.connect() as con:
-        cur = con.execute(
-            "INSERT INTO quizzes (slug, video_url, video_id, transcript) VALUES (?, ?, ?, ?)",
-            (slug, body.video_url.strip(), db.youtube_id(body.video_url), body.transcript),
-        )
-        quiz_id = cur.lastrowid
+        quiz_id = con.execute(
+            "INSERT INTO quizzes (slug, video_url, video_id, transcript, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+            (slug, body.video_url.strip(), db.youtube_id(body.video_url), body.transcript, db.now()),
+        ).fetchone()["id"]
     if not body.generate:
         return {"id": quiz_id, "job": None}
-    if not body.video_url.strip() and not body.transcript.strip():
-        raise HTTPException(400, "Collez un lien de vidéo ou une transcription")
 
     def on_done(title: str, transcript: str, questions: list) -> None:
         clean = db.validate_questions(questions)
@@ -303,10 +320,10 @@ def submit(slug: str, body: Submission):
     score = db.score_answers(questions, body.answers)
     with db.connect() as con:
         con.execute(
-            "INSERT INTO submissions (quiz_id, nom, prenom, tel, email, entreprise, answers_json, score, total)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO submissions (quiz_id, nom, prenom, tel, email, entreprise, answers_json, score, total,"
+            " consent_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (row["id"], p.nom.strip(), p.prenom.strip(), p.tel.strip(), p.email.strip(),
-             p.entreprise.strip(), json.dumps(body.answers), score, len(questions)),
+             p.entreprise.strip(), json.dumps(body.answers), score, len(questions), db.now(), db.now()),
         )
     result: dict = {"done": True}
     if row["show_score"]:
