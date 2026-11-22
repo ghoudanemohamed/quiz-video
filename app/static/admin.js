@@ -24,10 +24,30 @@ async function renderNew() {
   S.current = null;
   loadList();
   if (!S.config) {
-    try { S.config = await api("/api/admin/config"); } catch (_) { S.config = { transcribe: false }; }
+    try { S.config = await api("/api/admin/config"); } catch (_) { S.config = { transcribe: false, ai: false }; }
   }
   const local = S.config.transcribe;
   const url = h("input", { type: "url", placeholder: "https://www.youtube.com/watch?v=…", autocomplete: "off" });
+
+  if (!S.config.ai) {
+    // No AI key configured: the questions are written by hand, so the screen is just a video link and one button.
+    const create = h("button", { class: "primary", type: "button" }, "Créer le questionnaire");
+    const err = h("div");
+    create.addEventListener("click", async () => {
+      create.disabled = true;
+      try {
+        const r = await api("/api/admin/quizzes", { method: "POST", body: { video_url: url.value, generate: false } });
+        openQuiz(r.id);
+      } catch (e) { err.replaceChildren(notice(e.message)); create.disabled = false; }
+    });
+    mainEl.replaceChildren(
+      h("h2", {}, "Nouveau questionnaire"),
+      h("p", { class: "muted", style: "margin-top:8px" }, "Collez le lien de la vidéo, puis écrivez vos questions et leurs réponses dans l'éditeur."),
+      h("div", { class: "card stack", style: "margin-top:24px" },
+        h("label", { class: "field" }, h("span", {}, "Lien de la vidéo (affichée aux participants)"), url),
+        h("div", {}, create), err));
+    return;
+  }
   const transcript = h("textarea", { rows: local ? "6" : "10", placeholder: local
     ? "Collez ici le texte de la vidéo si le téléchargement échoue"
     : "Collez ici tout le texte prononcé dans la vidéo" });

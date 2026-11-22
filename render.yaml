@@ -12,7 +12,5 @@ services:
         value: 3.12.8
       - key: ADMIN_PASSWORD
         sync: false
-      - key: GEMINI_API_KEY
-        sync: false
       - key: DATABASE_URL
         sync: false

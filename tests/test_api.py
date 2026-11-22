@@ -131,7 +131,7 @@ from app import pipeline  # noqa: E402
 
 def test_online_requires_transcript(client, monkeypatch):
     monkeypatch.setenv("QUIZ_TRANSCRIBE", "0")
-    assert client.get("/api/admin/config", headers=AUTH).json() == {"transcribe": False}
+    assert client.get("/api/admin/config", headers=AUTH).json()["transcribe"] is False
     before = len(client.get("/api/admin/quizzes", headers=AUTH).json())
     r = client.post("/api/admin/quizzes", headers=AUTH, json={"video_url": "https://youtu.be/_Ybx69RTTOQ"})
     assert r.status_code == 400 and "transcription" in r.json()["detail"]
@@ -183,3 +183,11 @@ def test_no_ai_key_message(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         pipeline.generate_questions("texte", n=3)
+
+
+def test_manual_mode_without_ai_key(client, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert client.get("/api/admin/config", headers=AUTH).json()["ai"] is False
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    assert client.get("/api/admin/config", headers=AUTH).json()["ai"] is True

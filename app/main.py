@@ -134,7 +134,7 @@ def list_quizzes(_: None = Depends(admin)):
 
 @app.get("/api/admin/config")
 def admin_config(_: None = Depends(admin)):
-    return {"transcribe": pipeline.transcription_available()}
+    return {"transcribe": pipeline.transcription_available(), "ai": pipeline.ai_available()}
 
 
 @app.post("/api/admin/quizzes")

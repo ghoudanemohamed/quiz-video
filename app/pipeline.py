@@ -30,7 +30,12 @@ def transcription_available() -> bool:
     return all(importlib.util.find_spec(m) for m in ("yt_dlp", "faster_whisper", "numpy"))
 
 
-NEEDS_TRANSCRIPT = "Collez la transcription de la vidéo : la version en ligne ne peut pas télécharger les vidéos"
+def ai_available() -> bool:
+    """True when a key for Gemini or Claude is configured. Without one, questions are written by hand."""
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+
+
+NEEDS_TRANSCRIPT ="Collez la transcription de la vidéo : la version en ligne ne peut pas télécharger les vidéos"
 
 JOBS: dict[str, dict] = {}
 
