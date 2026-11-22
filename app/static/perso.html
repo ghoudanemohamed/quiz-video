@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mes questions</title>
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .tabs-top { display: flex; gap: 4px; margin: 0 0 24px; border-bottom: 1px solid var(--line); }
+    .qrow { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .qrow:last-child { border-bottom: 0; }
+    .qrow .txt { flex: 1; min-width: 0; }
+    .opts-edit { display: grid; gap: 8px; margin: 16px 0; }
+    .opt-row .pick { width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--line-strong); padding: 0; font-size: 12px; flex: none; }
+  </style>
+</head>
+<body>
+  <main class="page" id="app"></main>
+<script>
+const KEY = "perso-questions-v1";
+const L = ["A", "B", "C", "D"];
+const app = document.getElementById("app");
+let qs = [];
+try { qs = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(qs)); } catch (e) {} };
+
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null) el.append(c);
+  return el;
+}
+
+let view = qs.length ? "revise" : "edit";
+function go(v) { view = v; render(); window.scrollTo({ top: 0 }); }
+
+function shell(...nodes) {
+  const nav = h("div", { class: "tabs-top", role: "tablist" },
+    h("button", { class: "tab", role: "tab", "aria-selected": String(view === "edit"), onclick: () => go("edit") }, "Mes questions"),
+    h("button", { class: "tab", role: "tab", "aria-selected": String(view !== "edit"), onclick: () => go("revise"), disabled: !qs.length }, "Répondre"));
+  app.replaceChildren(h("div", { class: "brand" }, h("span", { class: "bubble" }), "Mes questions"), nav, ...nodes);
+}
+
+/* ---------- saisie */
+function renderEdit() {
+  let correct = 0;
+  const q = h("textarea", { rows: 2, placeholder: "La question", "aria-label": "Question" });
+  const inputs = L.map((l) => h("input", { type: "text", placeholder: "Réponse " + l, "aria-label": "Réponse " + l }));
+  const paint = (p, on) => {
+    p.setAttribute("aria-checked", String(on));
+    p.style.background = on ? "var(--ok)" : "var(--surface)";
+    p.style.borderColor = on ? "var(--ok)" : "";
+    p.style.color = on ? "var(--bg)" : "var(--text-2)";
+  };
+  const picks = L.map((l, i) => h("button", {
+    class: "pick", type: "button", role: "radio", "aria-label": "Bonne réponse " + l,
+    onclick: () => { correct = i; picks.forEach((p, j) => paint(p, j === i)); },
+  }, l));
+  picks.forEach((p, j) => paint(p, j === 0));
+  const err = h("p", { class: "notice error hidden", role: "alert" });
+  const add = () => {
+    const opts = inputs.map((i) => i.value.trim());
+    const text = q.value.trim();
+    if (!text || opts.filter(Boolean).length < 2 || !opts[correct]) {
+      err.textContent = "Il faut une question, au moins deux réponses, et la bonne réponse remplie";
+      err.classList.remove("hidden"); return;
+    }
+    const keep = opts.map((o, i) => ({ o, i })).filter((x) => x.o);
+    qs.push({ q: text, options: keep.map((x) => x.o), correct: keep.findIndex((x) => x.i === correct) });
+    save(); render();
+  };
+  const list = qs.length
+    ? h("div", { class: "card", style: "margin-top:24px" }, qs.map((x, i) => h("div", { class: "qrow" },
+        h("span", { class: "mono muted small" }, String(i + 1).padStart(2, "0")),
+        h("span", { class: "txt" }, x.q),
+        h("button", { class: "quiet small del", type: "button", "aria-label": "Supprimer la question " + (i + 1), onclick: () => { qs.splice(i, 1); save(); render(); } }, "Supprimer"))))
+    : null;
+  shell(
+    h("div", { class: "card" },
+      h("h2", {}, "Nouvelle question"),
+      h("div", { style: "margin-top:16px" }, q),
+      h("div", { class: "opts-edit" }, inputs.map((inp, i) => h("div", { class: "opt-row" }, picks[i], inp))),
+      h("p", { class: "small muted" }, "Cochez la lettre de la bonne réponse. Deux réponses suffisent"),
+      err,
+      h("div", { class: "row", style: "margin-top:16px" },
+        h("button", { class: "primary", type: "button", onclick: add }, "Ajouter"),
+        qs.length ? h("button", { type: "button", onclick: () => go("revise") }, "Répondre aux " + qs.length + " questions") : null)),
+    list);
+}
+
+/* ---------- réponse */
+let answers = [];
+let done = false;
+function renderRevise() {
+  if (answers.length !== qs.length) { answers = qs.map(() => null); done = false; }
+  const sheet = h("div", { class: "sheet", style: "margin-top:0" });
+  qs.forEach((x, qi) => {
+    const opts = x.options.map((o, oi) => {
+      const state = !done ? "" : oi === x.correct ? "is-correct" : oi === answers[qi] ? "is-wrong" : "";
+      const b = h("button", { class: "option " + state, type: "button", role: "radio", "aria-checked": String(answers[qi] === oi) },
+        h("span", { class: "bubble" }, L[oi]), h("span", {}, o));
+      b.addEventListener("click", () => { if (done) return; answers[qi] = oi; renderRevise(); });
+      return b;
+    });
+    sheet.append(h("section", { class: "question" },
+      h("p", { class: "num" }, String(qi + 1).padStart(2, "0") + " / " + String(qs.length).padStart(2, "0")),
+      h("h3", {}, x.q), h("div", { class: "options", role: "radiogroup" }, opts)));
+  });
+  const n = answers.filter((a) => a !== null).length;
+  const send = h("button", { class: "primary", type: "button", disabled: !done && n < qs.length }, done ? "Recommencer" : "Corriger");
+  send.addEventListener("click", () => {
+    if (done) { answers = qs.map(() => null); done = false; } else done = true;
+    renderRevise(); window.scrollTo({ top: 0 });
+  });
+  const score = answers.filter((a, i) => a === qs[i].correct).length;
+  const miss = qs.length - score;
+  const result = done ? h("div", { class: "card copy", style: "margin-bottom:24px" },
+    h("div", { class: "stamp" }, String(score), h("small", {}, "/" + qs.length)),
+    h("div", {}, h("h2", {}, miss === 0 ? "Aucune erreur" : miss + " erreur" + (miss > 1 ? "s" : "")),
+      h("p", {}, "La correction est juste en dessous"))) : null;
+  shell(result, sheet,
+    h("div", { class: "sticky-bar" }, h("div", { class: "inner" },
+      h("span", { class: "small muted mono" }, n + " / " + qs.length), h("span", { class: "spacer" }), send)));
+}
+
+function render() { view === "edit" ? renderEdit() : renderRevise(); }
+render();
+</script>
+</body>
+</html>
